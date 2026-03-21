@@ -21,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Paths ----------
+
 BASE_DIR = Path(__file__).resolve().parents[2]   # project root
 MODEL_PATH = BASE_DIR / "src" / "models" / "churn_model.pkl"
 COLUMNS_PATH = BASE_DIR / "src" / "models" / "model_columns.pkl"
@@ -31,11 +31,11 @@ PREDICTIONS_PATH = PREDICTIONS_DIR / "prediction_history.csv"
 
 PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---------- Load artifacts ----------
+
 model = joblib.load(MODEL_PATH)
 model_columns = joblib.load(COLUMNS_PATH)
 
-# ---------- Request schema ----------
+
 class CustomerData(BaseModel):
     gender: str
     SeniorCitizen: int
@@ -58,7 +58,7 @@ class CustomerData(BaseModel):
     TotalCharges: float
 
 
-# ---------- Helpers ----------
+
 def risk_category(p: float) -> str:
     if p < 0.3:
         return "Low Risk"
