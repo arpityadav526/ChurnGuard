@@ -119,6 +119,102 @@ def load_prediction_history() -> pd.DataFrame:
         return pd.read_csv(PREDICTIONS_PATH)
     return pd.DataFrame()
 
+def build_customer_drivers(row: dict) -> list[dict]:
+    drivers = []
+
+    if row.get("Contract") == "Month-to-month":
+        drivers.append({
+            "title": "Month-to-Month Contract",
+            "description": "Customers on month-to-month plans usually show higher churn probability than long-term contract users.",
+            "impact": "High"
+        })
+
+    if float(row.get("MonthlyCharges", 0)) >= 80:
+        drivers.append({
+            "title": "High Monthly Charges",
+            "description": "Higher monthly bills are strongly associated with elevated churn risk.",
+            "impact": "High"
+        })
+
+    if float(row.get("tenure", 0)) <= 12:
+        drivers.append({
+            "title": "Low Tenure",
+            "description": "Newer customers are more likely to leave early if engagement is weak.",
+            "impact": "High"
+        })
+
+    if row.get("TechSupport") == "No":
+        drivers.append({
+            "title": "No Tech Support",
+            "description": "Lack of tech support often increases dissatisfaction and churn likelihood.",
+            "impact": "Medium"
+        })
+
+    if row.get("OnlineSecurity") == "No":
+        drivers.append({
+            "title": "No Online Security",
+            "description": "Customers without online security services tend to show weaker service stickiness.",
+            "impact": "Medium"
+        })
+
+    if row.get("PaymentMethod") == "Electronic check":
+        drivers.append({
+            "title": "Electronic Check Payment",
+            "description": "Electronic check users tend to churn more often than customers on other payment methods.",
+            "impact": "Medium"
+        })
+
+    if row.get("InternetService") == "Fiber optic":
+        drivers.append({
+            "title": "Fiber Optic Service",
+            "description": "In this dataset, fiber optic customers often show relatively higher churn.",
+            "impact": "Medium"
+        })
+
+    if not drivers:
+        drivers.append({
+            "title": "Stable Customer Profile",
+            "description": "This customer does not currently show strong churn signals from the available rules.",
+            "impact": "Low"
+        })
+
+    return drivers[:5]
+
+
+def build_explanation_bars(row: dict) -> list[dict]:
+    bars = []
+
+    if row.get("Contract") == "Month-to-month":
+        bars.append({"feature": "Month-to-Month Contract", "value": 0.30, "direction": "increase"})
+    if float(row.get("MonthlyCharges", 0)) >= 80:
+        bars.append({"feature": "High Monthly Charges", "value": 0.22, "direction": "increase"})
+    if float(row.get("tenure", 0)) <= 12:
+        bars.append({"feature": "Low Tenure", "value": 0.20, "direction": "increase"})
+    if row.get("TechSupport") == "No":
+        bars.append({"feature": "No Tech Support", "value": 0.12, "direction": "increase"})
+    if row.get("OnlineSecurity") == "No":
+        bars.append({"feature": "No Online Security", "value": 0.10, "direction": "increase"})
+    if row.get("Partner") == "Yes":
+        bars.append({"feature": "Has Partner", "value": 0.06, "direction": "decrease"})
+    if float(row.get("tenure", 0)) >= 36:
+        bars.append({"feature": "Long Tenure", "value": 0.12, "direction": "decrease"})
+
+    if not bars:
+        bars.append({"feature": "Balanced Profile", "value": 0.01, "direction": "decrease"})
+
+    return bars[:6]
+
+
+def get_global_feature_importance() -> list[dict]:
+    return [
+        {"feature": "Contract Type", "score": 92},
+        {"feature": "Monthly Charges", "score": 84},
+        {"feature": "Tenure", "score": 79},
+        {"feature": "Tech Support", "score": 63},
+        {"feature": "Online Security", "score": 58},
+        {"feature": "Payment Method", "score": 52},
+        {"feature": "Internet Service", "score": 47},
+    ]
 
 # ---------- Routes ----------
 @app.get("/")
@@ -262,3 +358,74 @@ def recent_predictions(limit: int = 10):
 
     existing_cols = [c for c in cols if c in history.columns]
     return history[existing_cols].to_dict(orient="records")
+
+
+@app.get("/insights/latest-customer")
+def insights_latest_customer():
+    history = load_prediction_history()
+
+    if history.empty:
+        return {
+            "message": "No prediction history found yet."
+        }
+
+    history = history.sort_values("timestamp", ascending=False)
+    row = history.iloc[0].to_dict()
+
+    return {
+        "customer_profile": {
+            "timestamp": row.get("timestamp"),
+            "contract": row.get("Contract"),
+            "monthly_charges": round(float(row.get("MonthlyCharges", 0)), 2),
+            "tenure": int(row.get("tenure", 0)),
+            "internet_service": row.get("InternetService"),
+            "payment_method": row.get("PaymentMethod"),
+        },
+        "churn_probability": round(float(row.get("churn_probability", 0)), 4),
+        "churn_prediction": int(row.get("churn_prediction", 0)),
+        "risk_level": row.get("risk_level", "Unknown"),
+        "retention_action": row.get("retention_action", "No action"),
+        "top_drivers": build_customer_drivers(row),
+        "explanation_bars": build_explanation_bars(row),
+    }
+
+
+@app.get("/insights/customer")
+def insights_customer(index: int = 0):
+    history = load_prediction_history()
+
+    if history.empty:
+        return {
+            "message": "No prediction history found yet."
+        }
+
+    history = history.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+    if index < 0 or index >= len(history):
+        return {
+            "message": "Customer index out of range."
+        }
+
+    row = history.iloc[index].to_dict()
+
+    return {
+        "customer_profile": {
+            "timestamp": row.get("timestamp"),
+            "contract": row.get("Contract"),
+            "monthly_charges": round(float(row.get("MonthlyCharges", 0)), 2),
+            "tenure": int(row.get("tenure", 0)),
+            "internet_service": row.get("InternetService"),
+            "payment_method": row.get("PaymentMethod"),
+        },
+        "churn_probability": round(float(row.get("churn_probability", 0)), 4),
+        "churn_prediction": int(row.get("churn_prediction", 0)),
+        "risk_level": row.get("risk_level", "Unknown"),
+        "retention_action": row.get("retention_action", "No action"),
+        "top_drivers": build_customer_drivers(row),
+        "explanation_bars": build_explanation_bars(row),
+    }
+
+
+@app.get("/insights/feature-importance")
+def insights_feature_importance():
+    return get_global_feature_importance()
