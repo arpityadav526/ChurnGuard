@@ -1,40 +1,60 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 from datetime import datetime
+from io import StringIO
 import pandas as pd
 import joblib
 
-app = FastAPI(title="ChurnGuard API")
+app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
+# Streamlit-friendly CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+BASE_DIR = Path(__file__).resolve().parents[2]
 
-BASE_DIR = Path(__file__).resolve().parents[2]   # project root
 MODEL_PATH = BASE_DIR / "src" / "models" / "churn_model.pkl"
 COLUMNS_PATH = BASE_DIR / "src" / "models" / "model_columns.pkl"
+METRICS_PATH = BASE_DIR / "src" / "models" / "model_metrics.pkl"
 DATA_PATH = BASE_DIR / "data" / "raw" / "IBM Teleco Churn Dataset.csv"
+
 PREDICTIONS_DIR = BASE_DIR / "data" / "processed"
 PREDICTIONS_PATH = PREDICTIONS_DIR / "prediction_history.csv"
 
 PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+if not MODEL_PATH.exists():
+    raise RuntimeError(f"Model file not found at: {MODEL_PATH}")
+
+if not COLUMNS_PATH.exists():
+    raise RuntimeError(f"Model columns file not found at: {COLUMNS_PATH}")
 
 model = joblib.load(MODEL_PATH)
 model_columns = joblib.load(COLUMNS_PATH)
 
+if METRICS_PATH.exists():
+    model_metrics = joblib.load(METRICS_PATH)
+else:
+    model_metrics = None
+
+print("Loaded model type:", type(model))
+print("Loaded model from:", MODEL_PATH)
+print("Loaded columns from:", COLUMNS_PATH)
+
+if model_metrics is not None:
+    print("Loaded metrics from:", METRICS_PATH)
+else:
+    print("Model metrics file not found.")
 
 class CustomerData(BaseModel):
     gender: str
@@ -58,45 +78,81 @@ class CustomerData(BaseModel):
     TotalCharges: float
 
 
+REQUIRED_COLUMNS = [
+    "gender",
+    "SeniorCitizen",
+    "Partner",
+    "Dependents",
+    "tenure",
+    "PhoneService",
+    "MultipleLines",
+    "InternetService",
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport",
+    "StreamingTV",
+    "StreamingMovies",
+    "Contract",
+    "PaperlessBilling",
+    "PaymentMethod",
+    "MonthlyCharges",
+    "TotalCharges",
+]
+
 
 def risk_category(p: float) -> str:
     if p < 0.3:
         return "Low Risk"
     elif p < 0.7:
         return "Medium Risk"
-    else:
-        return "High Risk"
+    return "High Risk"
 
 
 def retention_action(row: dict) -> str:
     actions = []
 
-    if row["Contract"] == "Month-to-month":
+    if row.get("Contract") == "Month-to-month":
         actions.append("Offer long-term contract discount")
 
-    if row["MonthlyCharges"] > 70:
+    if float(row.get("MonthlyCharges", 0)) > 70:
         actions.append("Provide discount or bundle offer")
 
-    if row["tenure"] < 12:
+    if float(row.get("tenure", 0)) < 12:
         actions.append("Onboarding support / engagement program")
 
-    if row["TechSupport"] == "No":
+    if row.get("TechSupport") == "No":
         actions.append("Offer free tech support trial")
+
+    if row.get("OnlineSecurity") == "No":
+        actions.append("Bundle online security service")
+
+    if row.get("PaymentMethod") == "Electronic check":
+        actions.append("Encourage shift to automatic payment methods")
 
     if not actions:
         return "No immediate action"
 
-    return ", ".join(actions)
+    return ", ".join(actions[:2])
 
 
 def ensure_dataset_loaded() -> pd.DataFrame:
+    if not DATA_PATH.exists():
+        raise HTTPException(status_code=500, detail="Raw dataset not found.")
+
     df = pd.read_csv(DATA_PATH)
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
     df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
     return df
 
 
-def append_prediction_record(input_dict: dict, churn_prob: float, churn_pred: int, risk: str, action: str):
+def append_prediction_record(
+    input_dict: dict,
+    churn_prob: float,
+    churn_pred: int,
+    risk: str,
+    action: str
+):
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         **input_dict,
@@ -118,6 +174,38 @@ def load_prediction_history() -> pd.DataFrame:
     if PREDICTIONS_PATH.exists():
         return pd.read_csv(PREDICTIONS_PATH)
     return pd.DataFrame()
+
+
+def preprocess_input_df(input_df: pd.DataFrame) -> pd.DataFrame:
+    processed_df = input_df.copy()
+
+    if "TotalCharges" in processed_df.columns:
+        processed_df["TotalCharges"] = pd.to_numeric(
+            processed_df["TotalCharges"], errors="coerce"
+        )
+        processed_df["TotalCharges"] = processed_df["TotalCharges"].fillna(
+            processed_df["TotalCharges"].median()
+        )
+
+    # Must match training exactly
+    processed_df["AvgCharges"] = processed_df["TotalCharges"] / (processed_df["tenure"] + 1)
+    processed_df["IsNewCustomer"] = (processed_df["tenure"] <= 12).astype(int)
+    processed_df["HighSpender"] = (processed_df["MonthlyCharges"] >= 80).astype(int)
+
+    encoded_df = pd.get_dummies(processed_df)
+    encoded_df = encoded_df.reindex(columns=model_columns, fill_value=0)
+
+    return encoded_df
+
+
+def validate_input_columns(df: pd.DataFrame):
+    missing_cols = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    if missing_cols:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns: {missing_cols}"
+        )
+
 
 def build_customer_drivers(row: dict) -> list[dict]:
     drivers = []
@@ -171,6 +259,13 @@ def build_customer_drivers(row: dict) -> list[dict]:
             "impact": "Medium"
         })
 
+    if row.get("Partner") == "No":
+        drivers.append({
+            "title": "No Partner",
+            "description": "Customers without a partner may have slightly weaker retention in some churn patterns.",
+            "impact": "Low"
+        })
+
     if not drivers:
         drivers.append({
             "title": "Stable Customer Profile",
@@ -185,22 +280,74 @@ def build_explanation_bars(row: dict) -> list[dict]:
     bars = []
 
     if row.get("Contract") == "Month-to-month":
-        bars.append({"feature": "Month-to-Month Contract", "value": 0.30, "direction": "increase"})
+        bars.append({
+            "feature": "Month-to-Month Contract",
+            "value": 0.30,
+            "direction": "increase"
+        })
+
     if float(row.get("MonthlyCharges", 0)) >= 80:
-        bars.append({"feature": "High Monthly Charges", "value": 0.22, "direction": "increase"})
+        bars.append({
+            "feature": "High Monthly Charges",
+            "value": 0.22,
+            "direction": "increase"
+        })
+
     if float(row.get("tenure", 0)) <= 12:
-        bars.append({"feature": "Low Tenure", "value": 0.20, "direction": "increase"})
+        bars.append({
+            "feature": "Low Tenure",
+            "value": 0.20,
+            "direction": "increase"
+        })
+
     if row.get("TechSupport") == "No":
-        bars.append({"feature": "No Tech Support", "value": 0.12, "direction": "increase"})
+        bars.append({
+            "feature": "No Tech Support",
+            "value": 0.12,
+            "direction": "increase"
+        })
+
     if row.get("OnlineSecurity") == "No":
-        bars.append({"feature": "No Online Security", "value": 0.10, "direction": "increase"})
+        bars.append({
+            "feature": "No Online Security",
+            "value": 0.10,
+            "direction": "increase"
+        })
+
+    if row.get("PaymentMethod") == "Electronic check":
+        bars.append({
+            "feature": "Electronic Check",
+            "value": 0.08,
+            "direction": "increase"
+        })
+
     if row.get("Partner") == "Yes":
-        bars.append({"feature": "Has Partner", "value": 0.06, "direction": "decrease"})
+        bars.append({
+            "feature": "Has Partner",
+            "value": 0.06,
+            "direction": "decrease"
+        })
+
     if float(row.get("tenure", 0)) >= 36:
-        bars.append({"feature": "Long Tenure", "value": 0.12, "direction": "decrease"})
+        bars.append({
+            "feature": "Long Tenure",
+            "value": 0.12,
+            "direction": "decrease"
+        })
+
+    if row.get("Contract") in ["One year", "Two year"]:
+        bars.append({
+            "feature": "Long-Term Contract",
+            "value": 0.14,
+            "direction": "decrease"
+        })
 
     if not bars:
-        bars.append({"feature": "Balanced Profile", "value": 0.01, "direction": "decrease"})
+        bars.append({
+            "feature": "Balanced Profile",
+            "value": 0.01,
+            "direction": "decrease"
+        })
 
     return bars[:6]
 
@@ -216,7 +363,7 @@ def get_global_feature_importance() -> list[dict]:
         {"feature": "Internet Service", "score": 47},
     ]
 
-# ---------- Routes ----------
+
 @app.get("/")
 def home():
     return {"message": "ChurnGuard API is running"}
@@ -238,28 +385,76 @@ def predict(data: CustomerData):
     input_dict = data.model_dump()
     input_df = pd.DataFrame([input_dict])
 
-    # keep original values for retention logic + history
     original_row = input_df.iloc[0].to_dict()
+    input_encoded = preprocess_input_df(input_df)
 
-    # one-hot encode input
-    input_encoded = pd.get_dummies(input_df)
-
-    # align with training columns
-    input_encoded = input_encoded.reindex(columns=model_columns, fill_value=0)
-
-    # predict
-    churn_prob = model.predict_proba(input_encoded)[0][1]
+    churn_prob = float(model.predict_proba(input_encoded)[0][1])
     churn_pred = int(churn_prob >= 0.5)
     risk = risk_category(churn_prob)
     action = retention_action(original_row)
+    drivers = build_customer_drivers(original_row)
+    explanation_bars = build_explanation_bars(original_row)
 
     append_prediction_record(original_row, churn_prob, churn_pred, risk, action)
 
     return {
-        "churn_probability": round(float(churn_prob), 4),
+        "churn_probability": round(churn_prob, 4),
         "churn_prediction": churn_pred,
         "risk_level": risk,
         "retention_action": action,
+        "top_drivers": drivers,
+        "explanation_bars": explanation_bars,
+    }
+
+
+@app.post("/predict-batch")
+async def predict_batch(file: UploadFile = File(...)):
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
+
+    content = await file.read()
+
+    try:
+        df = pd.read_csv(StringIO(content.decode("utf-8")))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid CSV file.")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Uploaded CSV is empty.")
+
+    validate_input_columns(df)
+
+    original_df = df.copy()
+    processed_df = preprocess_input_df(df)
+
+    probs = model.predict_proba(processed_df)[:, 1]
+    preds = (probs >= 0.5).astype(int)
+
+    original_df["churn_probability"] = probs.round(4)
+    original_df["churn_prediction"] = preds
+    original_df["risk_level"] = [risk_category(p) for p in probs]
+    original_df["retention_action"] = [
+        retention_action(row) for row in original_df.to_dict(orient="records")
+    ]
+    original_df["top_drivers"] = [
+        build_customer_drivers(row) for row in original_df.to_dict(orient="records")
+    ]
+
+    for row in original_df.to_dict(orient="records"):
+        append_prediction_record(
+            input_dict={k: row[k] for k in REQUIRED_COLUMNS},
+            churn_prob=row["churn_probability"],
+            churn_pred=row["churn_prediction"],
+            risk=row["risk_level"],
+            action=row["retention_action"],
+        )
+
+    high_risk_count = int((original_df["risk_level"] == "High Risk").sum())
+
+    return {
+        "total_rows": int(len(original_df)),
+        "high_risk_count": high_risk_count,
+        "predictions": original_df.to_dict(orient="records"),
     }
 
 
@@ -365,9 +560,7 @@ def insights_latest_customer():
     history = load_prediction_history()
 
     if history.empty:
-        return {
-            "message": "No prediction history found yet."
-        }
+        return {"message": "No prediction history found yet."}
 
     history = history.sort_values("timestamp", ascending=False)
     row = history.iloc[0].to_dict()
@@ -395,16 +588,12 @@ def insights_customer(index: int = 0):
     history = load_prediction_history()
 
     if history.empty:
-        return {
-            "message": "No prediction history found yet."
-        }
+        return {"message": "No prediction history found yet."}
 
     history = history.sort_values("timestamp", ascending=False).reset_index(drop=True)
 
     if index < 0 or index >= len(history):
-        return {
-            "message": "Customer index out of range."
-        }
+        return {"message": "Customer index out of range."}
 
     row = history.iloc[index].to_dict()
 
@@ -429,3 +618,8 @@ def insights_customer(index: int = 0):
 @app.get("/insights/feature-importance")
 def insights_feature_importance():
     return get_global_feature_importance()
+
+
+@app.get("/model-performance")
+def model_performance():
+    return model_metrics
