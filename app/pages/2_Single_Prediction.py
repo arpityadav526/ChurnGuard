@@ -4,6 +4,15 @@ from components.helpers import post_json, safe_dataframe
 
 st.title("Predict Customer Churn")
 
+threshold = st.slider(
+    "Decision Threshold",
+    min_value=0.10,
+    max_value=0.90,
+    value=0.50,
+    step=0.05,
+    help="Lower threshold catches more potential churners but may increase false positives."
+)
+
 with st.form("predict_form"):
     col1, col2, col3 = st.columns(3)
 
@@ -79,7 +88,8 @@ if submitted:
         st.stop()
 
     churn_probability = result.get("churn_probability", 0.0)
-    churn_prediction = result.get("churn_prediction", 0)
+    model_prediction = result.get("churn_prediction", 0)
+    churn_prediction = 1 if churn_probability >= threshold else 0
     risk_level = result.get("risk_level", "Unknown")
     retention_action = result.get("retention_action", "No action")
     top_drivers = result.get("top_drivers", [])
@@ -92,17 +102,22 @@ if submitted:
     col2.metric("Churn Probability", f"{churn_probability * 100:.2f}%")
     col3.metric("Risk Level", risk_level)
 
+    st.caption(f"Model default prediction: {'Yes' if model_prediction == 1 else 'No'}")
+    st.caption(f"Threshold-adjusted prediction: {'Yes' if churn_prediction == 1 else 'No'}")
+
     st.progress(max(0.0, min(float(churn_probability), 1.0)))
 
-    st.subheader("Retention Action")
+    st.write("**Recommended Retention Action**")
     st.info(retention_action)
 
     if top_drivers:
-        st.subheader("Top Drivers")
+        st.write("**Why This Customer May Churn**")
         for driver in top_drivers:
-            st.write(f"**{driver['title']}** — {driver['description']} ({driver['impact']} impact)")
+            st.write(
+                f"- **{driver['title']}**: {driver['description']} ({driver['impact']})"
+            )
 
     explanation_df = safe_dataframe(explanation_bars)
     if not explanation_df.empty:
-        st.subheader("Explanation Scores")
+        st.write("**Key Risk Factors**")
         st.dataframe(explanation_df, use_container_width=True)
