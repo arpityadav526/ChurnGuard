@@ -6,6 +6,7 @@ from datetime import datetime
 from io import StringIO
 import pandas as pd
 import joblib
+import sqlite3
 
 app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
@@ -29,7 +30,8 @@ METRICS_PATH = BASE_DIR / "src" / "models" / "model_metrics.pkl"
 DATA_PATH = BASE_DIR / "data" / "raw" / "IBM Teleco Churn Dataset.csv"
 
 PREDICTIONS_DIR = BASE_DIR / "data" / "processed"
-PREDICTIONS_PATH = PREDICTIONS_DIR / "prediction_history.csv"
+DB_PATH = PREDICTIONS_DIR / "churnguard.db"
+PREDICTIONS_PATH = PREDICTIONS_DIR / "prediction_history.csv"  # kept for compatibility
 
 PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -55,6 +57,7 @@ if model_metrics is not None:
     print("Loaded metrics from:", METRICS_PATH)
 else:
     print("Model metrics file not found.")
+
 
 class CustomerData(BaseModel):
     gender: str
@@ -99,6 +102,53 @@ REQUIRED_COLUMNS = [
     "MonthlyCharges",
     "TotalCharges",
 ]
+
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            gender TEXT,
+            SeniorCitizen INTEGER,
+            Partner TEXT,
+            Dependents TEXT,
+            tenure INTEGER,
+            PhoneService TEXT,
+            MultipleLines TEXT,
+            InternetService TEXT,
+            OnlineSecurity TEXT,
+            OnlineBackup TEXT,
+            DeviceProtection TEXT,
+            TechSupport TEXT,
+            StreamingTV TEXT,
+            StreamingMovies TEXT,
+            Contract TEXT,
+            PaperlessBilling TEXT,
+            PaymentMethod TEXT,
+            MonthlyCharges REAL,
+            TotalCharges REAL,
+            churn_probability REAL,
+            churn_prediction INTEGER,
+            risk_level TEXT,
+            retention_action TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
 
 
 def risk_category(p: float) -> str:
@@ -153,27 +203,54 @@ def append_prediction_record(
     risk: str,
     action: str
 ):
-    row = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        **input_dict,
-        "churn_probability": round(float(churn_prob), 4),
-        "churn_prediction": int(churn_pred),
-        "risk_level": risk,
-        "retention_action": action,
-    }
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    row_df = pd.DataFrame([row])
+    cursor.execute("""
+        INSERT INTO predictions (
+            timestamp, gender, SeniorCitizen, Partner, Dependents, tenure,
+            PhoneService, MultipleLines, InternetService, OnlineSecurity,
+            OnlineBackup, DeviceProtection, TechSupport, StreamingTV,
+            StreamingMovies, Contract, PaperlessBilling, PaymentMethod,
+            MonthlyCharges, TotalCharges, churn_probability, churn_prediction,
+            risk_level, retention_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().isoformat(timespec="seconds"),
+        input_dict.get("gender"),
+        input_dict.get("SeniorCitizen"),
+        input_dict.get("Partner"),
+        input_dict.get("Dependents"),
+        input_dict.get("tenure"),
+        input_dict.get("PhoneService"),
+        input_dict.get("MultipleLines"),
+        input_dict.get("InternetService"),
+        input_dict.get("OnlineSecurity"),
+        input_dict.get("OnlineBackup"),
+        input_dict.get("DeviceProtection"),
+        input_dict.get("TechSupport"),
+        input_dict.get("StreamingTV"),
+        input_dict.get("StreamingMovies"),
+        input_dict.get("Contract"),
+        input_dict.get("PaperlessBilling"),
+        input_dict.get("PaymentMethod"),
+        float(input_dict.get("MonthlyCharges", 0)),
+        float(input_dict.get("TotalCharges", 0)),
+        round(float(churn_prob), 4),
+        int(churn_pred),
+        risk,
+        action
+    ))
 
-    if PREDICTIONS_PATH.exists():
-        row_df.to_csv(PREDICTIONS_PATH, mode="a", header=False, index=False)
-    else:
-        row_df.to_csv(PREDICTIONS_PATH, index=False)
+    conn.commit()
+    conn.close()
 
 
 def load_prediction_history() -> pd.DataFrame:
-    if PREDICTIONS_PATH.exists():
-        return pd.read_csv(PREDICTIONS_PATH)
-    return pd.DataFrame()
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    conn.close()
+    return df
 
 
 def preprocess_input_df(input_df: pd.DataFrame) -> pd.DataFrame:
@@ -377,6 +454,7 @@ def health():
         "columns_loaded": COLUMNS_PATH.exists(),
         "dataset_loaded": DATA_PATH.exists(),
         "prediction_history_exists": PREDICTIONS_PATH.exists(),
+        "database_exists": DB_PATH.exists(),
     }
 
 
@@ -622,4 +700,6 @@ def insights_feature_importance():
 
 @app.get("/model-performance")
 def model_performance():
+    if model_metrics is None:
+        raise HTTPException(status_code=500, detail="Model metrics not found.")
     return model_metrics
