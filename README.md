@@ -165,3 +165,103 @@ ChurnGuard/
 ├── main.py
 ├── requirements.txt
 └── README.md
+
+
+## How to Run the Project
+
+### 1. Clone the Repository
+
+```bash
+git clone <your-repository-url>
+cd ChurnGuard
+2. Create and Activate a Virtual Environment
+macOS / Linux
+python -m venv venv
+source venv/bin/activate
+Windows
+python -m venv venv
+venv\Scripts\activate
+3. Install Dependencies
+pip install -r requirements.txt
+4. Train the Model
+python src/models/train_model.py
+
+This creates the following files:
+
+src/models/churn_model.pkl
+src/models/model_columns.pkl
+src/models/model_metrics.pkl
+5. Run the Backend API
+uvicorn main:app --reload
+
+The backend will be available at:
+
+http://127.0.0.1:8000
+API docs: http://127.0.0.1:8000/docs
+6. Run the Streamlit Frontend
+streamlit run app.py
+
+The frontend will be available at:
+
+http://localhost:8501
+7. Run Tests
+pytest
+
+And this section too:
+
+```markdown
+## How to Use the Application
+
+### 1. Dashboard
+Open the **Dashboard** page to review high-level business metrics such as:
+- total customers
+- churn rate
+- high-risk customers
+- predicted revenue at risk
+- risk distribution
+- recent customer predictions
+
+### 2. Single Prediction
+Open the **Single Prediction** page and:
+1. Fill in the customer details
+2. Adjust the decision threshold if needed
+3. Click **Predict Churn**
+
+The system returns:
+- churn probability
+- predicted churn status
+- risk level
+- recommended retention action
+- why this customer may churn
+- key risk factors
+
+### 3. Batch Prediction
+Open the **Batch Prediction** page and:
+1. Upload a CSV file with the required columns
+2. Click **Run Batch Prediction**
+3. Review the generated results
+4. Download the prediction output CSV
+
+### 4. Customer Insights
+Open the **Customer Insights** page to:
+- inspect the latest predicted customer
+- review previously stored predictions by index
+- analyze top churn drivers
+- view key risk factors
+- review recommended retention actions
+
+### 5. Model Performance
+Open the **Model Performance** page to review:
+- accuracy
+- precision
+- recall
+- F1-score
+- ROC-AUC
+- confusion matrix
+
+### 6. Prediction History
+Open the **Prediction History** page to verify that predictions are being stored in the SQLite database and to review recent prediction records.
+
+### 7. API Documentation
+You can also test backend endpoints directly using the FastAPI Swagger UI:
+- `http://127.0.0.1:8000/docs`
