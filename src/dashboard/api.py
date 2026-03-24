@@ -7,6 +7,8 @@ from io import StringIO
 import pandas as pd
 import joblib
 import sqlite3
+import shap
+import numpy as np
 
 app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
@@ -58,6 +60,14 @@ if model_metrics is not None:
 else:
     print("Model metrics file not found.")
 
+# Build SHAP explainer once at startup
+try:
+    explainer = shap.TreeExplainer(model)
+    print("SHAP TreeExplainer initialized successfully.")
+except Exception as e:
+    explainer = None
+    print("Failed to initialize SHAP TreeExplainer:", str(e))
+
 
 class CustomerData(BaseModel):
     gender: str
@@ -101,6 +111,12 @@ REQUIRED_COLUMNS = [
     "PaymentMethod",
     "MonthlyCharges",
     "TotalCharges",
+]
+
+ENGINEERED_COLUMNS = [
+    "AvgCharges",
+    "IsNewCustomer",
+    "HighSpender",
 ]
 
 
@@ -284,160 +300,197 @@ def validate_input_columns(df: pd.DataFrame):
         )
 
 
-def build_customer_drivers(row: dict) -> list[dict]:
-    drivers = []
+def prettify_feature_name(name: str) -> str:
+    pretty_map = {
+        "SeniorCitizen": "Senior Citizen",
+        "PhoneService": "Phone Service",
+        "MultipleLines": "Multiple Lines",
+        "InternetService": "Internet Service",
+        "OnlineSecurity": "Online Security",
+        "OnlineBackup": "Online Backup",
+        "DeviceProtection": "Device Protection",
+        "TechSupport": "Tech Support",
+        "StreamingTV": "Streaming TV",
+        "StreamingMovies": "Streaming Movies",
+        "PaperlessBilling": "Paperless Billing",
+        "PaymentMethod": "Payment Method",
+        "MonthlyCharges": "Monthly Charges",
+        "TotalCharges": "Total Charges",
+        "AvgCharges": "Average Charges",
+        "IsNewCustomer": "New Customer Flag",
+        "HighSpender": "High Spender Flag",
+    }
+    return pretty_map.get(name, name)
 
-    if row.get("Contract") == "Month-to-month":
-        drivers.append({
-            "title": "Month-to-Month Contract",
-            "description": "Customers on month-to-month plans usually show higher churn probability than long-term contract users.",
-            "impact": "High"
+
+def get_feature_group(feature_name: str) -> str:
+    all_groups = REQUIRED_COLUMNS + ENGINEERED_COLUMNS
+
+    for col in all_groups:
+        if feature_name == col:
+            return col
+        if feature_name.startswith(f"{col}_"):
+            return col
+
+    return feature_name
+
+
+def get_display_value(feature_group: str, original_row: dict) -> str:
+    if feature_group in original_row:
+        return str(original_row.get(feature_group))
+    if feature_group == "AvgCharges":
+        tenure = float(original_row.get("tenure", 0))
+        total = float(original_row.get("TotalCharges", 0))
+        return str(round(total / (tenure + 1), 2))
+    if feature_group == "IsNewCustomer":
+        return str(int(float(original_row.get("tenure", 0)) <= 12))
+    if feature_group == "HighSpender":
+        return str(int(float(original_row.get("MonthlyCharges", 0)) >= 80))
+    return "N/A"
+
+
+def impact_level(abs_value: float) -> str:
+    if abs_value >= 0.08:
+        return "High"
+    if abs_value >= 0.03:
+        return "Medium"
+    return "Low"
+
+
+def build_driver_description(feature_group: str, value: str, shap_value: float) -> str:
+    direction_text = "increases" if shap_value > 0 else "reduces"
+
+    custom_descriptions = {
+        "Contract": f"Contract setting ({value}) {direction_text} churn risk for this prediction.",
+        "MonthlyCharges": f"Monthly charges ({value}) {direction_text} churn risk for this customer.",
+        "tenure": f"Customer tenure ({value}) {direction_text} churn risk in the model output.",
+        "TechSupport": f"Tech support status ({value}) {direction_text} churn risk for this case.",
+        "OnlineSecurity": f"Online security status ({value}) {direction_text} churn risk for this case.",
+        "PaymentMethod": f"Payment method ({value}) {direction_text} churn risk in this prediction.",
+        "InternetService": f"Internet service type ({value}) {direction_text} churn risk for this customer.",
+        "Partner": f"Partner status ({value}) {direction_text} churn risk in the current prediction.",
+        "TotalCharges": f"Total charges ({value}) {direction_text} churn risk in the model output.",
+        "AvgCharges": f"Average charges ({value}) {direction_text} churn risk after feature engineering.",
+        "IsNewCustomer": f"New customer indicator ({value}) {direction_text} churn risk in the model.",
+        "HighSpender": f"High spender indicator ({value}) {direction_text} churn risk in the model.",
+    }
+
+    return custom_descriptions.get(
+        feature_group,
+        f"{prettify_feature_name(feature_group)} ({value}) {direction_text} churn risk for this prediction."
+    )
+
+
+def explain_with_shap(input_df: pd.DataFrame) -> dict:
+    if explainer is None:
+        return {
+            "explanation_type": "shap_unavailable",
+            "top_drivers": [],
+            "explanation_bars": [],
+        }
+
+    processed = preprocess_input_df(input_df)
+    original_row = input_df.iloc[0].to_dict()
+
+    try:
+        shap_values_raw = explainer.shap_values(processed)
+        expected_value = explainer.expected_value
+    except Exception:
+        shap_explanation = explainer(processed)
+        shap_values_raw = shap_explanation.values
+        expected_value = shap_explanation.base_values
+
+    # Normalize SHAP output across model types
+    if isinstance(shap_values_raw, list):
+        if len(shap_values_raw) > 1:
+            shap_values = np.array(shap_values_raw[1])
+            base_value = expected_value[1] if isinstance(expected_value, (list, np.ndarray)) else expected_value
+        else:
+            shap_values = np.array(shap_values_raw[0])
+            base_value = expected_value[0] if isinstance(expected_value, (list, np.ndarray)) else expected_value
+    else:
+        shap_values = np.array(shap_values_raw)
+        if shap_values.ndim == 3:
+            shap_values = shap_values[:, :, 1]
+            base_value = expected_value[:, 1][0] if isinstance(expected_value, np.ndarray) and np.array(expected_value).ndim == 2 else expected_value[1]
+        else:
+            if isinstance(expected_value, np.ndarray):
+                base_value = expected_value[0] if expected_value.ndim > 0 else float(expected_value)
+            else:
+                base_value = expected_value
+
+    row_shap = shap_values[0]
+    encoded_feature_names = list(processed.columns)
+
+    grouped_contributions = {}
+    for feature_name, shap_val in zip(encoded_feature_names, row_shap):
+        group = get_feature_group(feature_name)
+        grouped_contributions[group] = grouped_contributions.get(group, 0.0) + float(shap_val)
+
+    driver_rows = []
+    for feature_group, shap_val in grouped_contributions.items():
+        value = get_display_value(feature_group, original_row)
+        abs_val = abs(shap_val)
+        direction = "increase" if shap_val > 0 else "decrease"
+
+        driver_rows.append({
+            "feature_key": feature_group,
+            "title": prettify_feature_name(feature_group),
+            "description": build_driver_description(feature_group, value, shap_val),
+            "impact": impact_level(abs_val),
+            "direction": direction,
+            "value": value,
+            "shap_value": round(float(shap_val), 6),
+            "abs_shap_value": round(float(abs_val), 6),
         })
 
-    if float(row.get("MonthlyCharges", 0)) >= 80:
-        drivers.append({
-            "title": "High Monthly Charges",
-            "description": "Higher monthly bills are strongly associated with elevated churn risk.",
-            "impact": "High"
-        })
+    driver_rows = sorted(driver_rows, key=lambda x: x["abs_shap_value"], reverse=True)
 
-    if float(row.get("tenure", 0)) <= 12:
-        drivers.append({
-            "title": "Low Tenure",
-            "description": "Newer customers are more likely to leave early if engagement is weak.",
-            "impact": "High"
-        })
+    top_drivers = driver_rows[:5]
+    explanation_bars = [
+        {
+            "feature": row["title"],
+            "value": round(float(row["abs_shap_value"]), 6),
+            "direction": row["direction"],
+            "shap_value": row["shap_value"],
+            "raw_value": row["value"],
+        }
+        for row in top_drivers
+    ]
 
-    if row.get("TechSupport") == "No":
-        drivers.append({
-            "title": "No Tech Support",
-            "description": "Lack of tech support often increases dissatisfaction and churn likelihood.",
-            "impact": "Medium"
-        })
-
-    if row.get("OnlineSecurity") == "No":
-        drivers.append({
-            "title": "No Online Security",
-            "description": "Customers without online security services tend to show weaker service stickiness.",
-            "impact": "Medium"
-        })
-
-    if row.get("PaymentMethod") == "Electronic check":
-        drivers.append({
-            "title": "Electronic Check Payment",
-            "description": "Electronic check users tend to churn more often than customers on other payment methods.",
-            "impact": "Medium"
-        })
-
-    if row.get("InternetService") == "Fiber optic":
-        drivers.append({
-            "title": "Fiber Optic Service",
-            "description": "In this dataset, fiber optic customers often show relatively higher churn.",
-            "impact": "Medium"
-        })
-
-    if row.get("Partner") == "No":
-        drivers.append({
-            "title": "No Partner",
-            "description": "Customers without a partner may have slightly weaker retention in some churn patterns.",
-            "impact": "Low"
-        })
-
-    if not drivers:
-        drivers.append({
-            "title": "Stable Customer Profile",
-            "description": "This customer does not currently show strong churn signals from the available rules.",
-            "impact": "Low"
-        })
-
-    return drivers[:5]
-
-
-def build_explanation_bars(row: dict) -> list[dict]:
-    bars = []
-
-    if row.get("Contract") == "Month-to-month":
-        bars.append({
-            "feature": "Month-to-Month Contract",
-            "value": 0.30,
-            "direction": "increase"
-        })
-
-    if float(row.get("MonthlyCharges", 0)) >= 80:
-        bars.append({
-            "feature": "High Monthly Charges",
-            "value": 0.22,
-            "direction": "increase"
-        })
-
-    if float(row.get("tenure", 0)) <= 12:
-        bars.append({
-            "feature": "Low Tenure",
-            "value": 0.20,
-            "direction": "increase"
-        })
-
-    if row.get("TechSupport") == "No":
-        bars.append({
-            "feature": "No Tech Support",
-            "value": 0.12,
-            "direction": "increase"
-        })
-
-    if row.get("OnlineSecurity") == "No":
-        bars.append({
-            "feature": "No Online Security",
-            "value": 0.10,
-            "direction": "increase"
-        })
-
-    if row.get("PaymentMethod") == "Electronic check":
-        bars.append({
-            "feature": "Electronic Check",
-            "value": 0.08,
-            "direction": "increase"
-        })
-
-    if row.get("Partner") == "Yes":
-        bars.append({
-            "feature": "Has Partner",
-            "value": 0.06,
-            "direction": "decrease"
-        })
-
-    if float(row.get("tenure", 0)) >= 36:
-        bars.append({
-            "feature": "Long Tenure",
-            "value": 0.12,
-            "direction": "decrease"
-        })
-
-    if row.get("Contract") in ["One year", "Two year"]:
-        bars.append({
-            "feature": "Long-Term Contract",
-            "value": 0.14,
-            "direction": "decrease"
-        })
-
-    if not bars:
-        bars.append({
-            "feature": "Balanced Profile",
-            "value": 0.01,
-            "direction": "decrease"
-        })
-
-    return bars[:6]
+    return {
+        "explanation_type": "model_native_shap",
+        "base_value": round(float(base_value), 6) if base_value is not None else None,
+        "top_drivers": top_drivers,
+        "explanation_bars": explanation_bars,
+    }
 
 
 def get_global_feature_importance() -> list[dict]:
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+        grouped_scores = {}
+
+        for feature_name, score in zip(model_columns, importances):
+            group = get_feature_group(feature_name)
+            grouped_scores[group] = grouped_scores.get(group, 0.0) + float(score)
+
+        ranked = sorted(grouped_scores.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        return [
+            {
+                "feature": prettify_feature_name(name),
+                "score": round(score * 100, 2)
+            }
+            for name, score in ranked
+        ]
+
     return [
-        {"feature": "Contract Type", "score": 92},
+        {"feature": "Contract", "score": 92},
         {"feature": "Monthly Charges", "score": 84},
         {"feature": "Tenure", "score": 79},
         {"feature": "Tech Support", "score": 63},
         {"feature": "Online Security", "score": 58},
-        {"feature": "Payment Method", "score": 52},
-        {"feature": "Internet Service", "score": 47},
     ]
 
 
@@ -455,6 +508,7 @@ def health():
         "dataset_loaded": DATA_PATH.exists(),
         "prediction_history_exists": PREDICTIONS_PATH.exists(),
         "database_exists": DB_PATH.exists(),
+        "shap_ready": explainer is not None,
     }
 
 
@@ -470,8 +524,8 @@ def predict(data: CustomerData):
     churn_pred = int(churn_prob >= 0.5)
     risk = risk_category(churn_prob)
     action = retention_action(original_row)
-    drivers = build_customer_drivers(original_row)
-    explanation_bars = build_explanation_bars(original_row)
+
+    shap_result = explain_with_shap(input_df)
 
     append_prediction_record(original_row, churn_prob, churn_pred, risk, action)
 
@@ -480,8 +534,10 @@ def predict(data: CustomerData):
         "churn_prediction": churn_pred,
         "risk_level": risk,
         "retention_action": action,
-        "top_drivers": drivers,
-        "explanation_bars": explanation_bars,
+        "explanation_type": shap_result.get("explanation_type", "unknown"),
+        "base_value": shap_result.get("base_value"),
+        "top_drivers": shap_result.get("top_drivers", []),
+        "explanation_bars": shap_result.get("explanation_bars", []),
     }
 
 
@@ -514,9 +570,20 @@ async def predict_batch(file: UploadFile = File(...)):
     original_df["retention_action"] = [
         retention_action(row) for row in original_df.to_dict(orient="records")
     ]
-    original_df["top_drivers"] = [
-        build_customer_drivers(row) for row in original_df.to_dict(orient="records")
-    ]
+
+    # Batch SHAP top drivers per row
+    top_drivers_list = []
+    explanation_bars_list = []
+    for row in original_df.to_dict(orient="records"):
+        row_df = pd.DataFrame([{
+            k: row[k] for k in REQUIRED_COLUMNS
+        }])
+        shap_result = explain_with_shap(row_df)
+        top_drivers_list.append(shap_result.get("top_drivers", []))
+        explanation_bars_list.append(shap_result.get("explanation_bars", []))
+
+    original_df["top_drivers"] = top_drivers_list
+    original_df["explanation_bars"] = explanation_bars_list
 
     for row in original_df.to_dict(orient="records"):
         append_prediction_record(
@@ -643,6 +710,11 @@ def insights_latest_customer():
     history = history.sort_values("timestamp", ascending=False)
     row = history.iloc[0].to_dict()
 
+    input_df = pd.DataFrame([{
+        col: row.get(col) for col in REQUIRED_COLUMNS
+    }])
+    shap_result = explain_with_shap(input_df)
+
     return {
         "customer_profile": {
             "timestamp": row.get("timestamp"),
@@ -656,8 +728,9 @@ def insights_latest_customer():
         "churn_prediction": int(row.get("churn_prediction", 0)),
         "risk_level": row.get("risk_level", "Unknown"),
         "retention_action": row.get("retention_action", "No action"),
-        "top_drivers": build_customer_drivers(row),
-        "explanation_bars": build_explanation_bars(row),
+        "explanation_type": shap_result.get("explanation_type", "unknown"),
+        "top_drivers": shap_result.get("top_drivers", []),
+        "explanation_bars": shap_result.get("explanation_bars", []),
     }
 
 
@@ -675,6 +748,11 @@ def insights_customer(index: int = 0):
 
     row = history.iloc[index].to_dict()
 
+    input_df = pd.DataFrame([{
+        col: row.get(col) for col in REQUIRED_COLUMNS
+    }])
+    shap_result = explain_with_shap(input_df)
+
     return {
         "customer_profile": {
             "timestamp": row.get("timestamp"),
@@ -688,8 +766,9 @@ def insights_customer(index: int = 0):
         "churn_prediction": int(row.get("churn_prediction", 0)),
         "risk_level": row.get("risk_level", "Unknown"),
         "retention_action": row.get("retention_action", "No action"),
-        "top_drivers": build_customer_drivers(row),
-        "explanation_bars": build_explanation_bars(row),
+        "explanation_type": shap_result.get("explanation_type", "unknown"),
+        "top_drivers": shap_result.get("top_drivers", []),
+        "explanation_bars": shap_result.get("explanation_bars", []),
     }
 
 

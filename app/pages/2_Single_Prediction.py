@@ -94,6 +94,8 @@ if submitted:
     retention_action = result.get("retention_action", "No action")
     top_drivers = result.get("top_drivers", [])
     explanation_bars = result.get("explanation_bars", [])
+    explanation_type = result.get("explanation_type", "unknown")
+    base_value = result.get("base_value", None)
 
     st.success("Prediction completed")
 
@@ -104,6 +106,10 @@ if submitted:
 
     st.caption(f"Model default prediction: {'Yes' if model_prediction == 1 else 'No'}")
     st.caption(f"Threshold-adjusted prediction: {'Yes' if churn_prediction == 1 else 'No'}")
+    st.caption(f"Explanation type: {explanation_type}")
+
+    if base_value is not None:
+        st.caption(f"SHAP base value: {base_value}")
 
     st.progress(max(0.0, min(float(churn_probability), 1.0)))
 
@@ -111,13 +117,23 @@ if submitted:
     st.info(retention_action)
 
     if top_drivers:
-        st.write("**Why This Customer May Churn**")
+        st.write("**Top Model Drivers (SHAP)**")
         for driver in top_drivers:
-            st.write(
-                f"- **{driver['title']}**: {driver['description']} ({driver['impact']})"
+            direction_icon = "↑" if driver.get("direction") == "increase" else "↓"
+            direction_label = "Increases churn risk" if driver.get("direction") == "increase" else "Reduces churn risk"
+
+            st.markdown(
+                f"""
+**{direction_icon} {driver.get('title', 'Unknown Feature')}**  
+- Value: `{driver.get('value', 'N/A')}`  
+- SHAP Value: `{driver.get('shap_value', 0)}`  
+- Impact: **{driver.get('impact', 'Unknown')}**  
+- {direction_label}  
+- {driver.get('description', '')}
+"""
             )
 
     explanation_df = safe_dataframe(explanation_bars)
     if not explanation_df.empty:
-        st.write("**Key Risk Factors**")
+        st.write("**SHAP Explanation Bars**")
         st.dataframe(explanation_df, use_container_width=True)
