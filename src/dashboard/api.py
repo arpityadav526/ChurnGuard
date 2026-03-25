@@ -9,6 +9,7 @@ import joblib
 import sqlite3
 import shap
 import numpy as np
+import os
 
 app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
@@ -22,18 +23,18 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
 
+)
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-MODEL_PATH = BASE_DIR / "src" / "models" / "churn_model.pkl"
-COLUMNS_PATH = BASE_DIR / "src" / "models" / "model_columns.pkl"
-METRICS_PATH = BASE_DIR / "src" / "models" / "model_metrics.pkl"
-DATA_PATH = BASE_DIR / "data" / "raw" / "IBM Teleco Churn Dataset.csv"
+MODEL_PATH = Path(os.getenv("MODEL_PATH", str(BASE_DIR / "src" / "models" / "churn_model.pkl")))
+COLUMNS_PATH = Path(os.getenv("COLUMNS_PATH", str(BASE_DIR / "src" / "models" / "model_columns.pkl")))
+METRICS_PATH = Path(os.getenv("METRICS_PATH", str(BASE_DIR / "src" / "models" / "model_metrics.pkl")))
+DATA_PATH = Path(os.getenv("DATA_PATH", str(BASE_DIR / "data" / "raw" / "IBM Teleco Churn Dataset.csv")))
 
-PREDICTIONS_DIR = BASE_DIR / "data" / "processed"
-DB_PATH = PREDICTIONS_DIR / "churnguard.db"
-PREDICTIONS_PATH = PREDICTIONS_DIR / "prediction_history.csv"  # kept for compatibility
+PREDICTIONS_DIR = Path(os.getenv("PREDICTIONS_DIR", str(BASE_DIR / "data" / "processed")))
+DB_PATH = Path(os.getenv("DB_PATH", str(PREDICTIONS_DIR / "churnguard.db")))
+PREDICTIONS_PATH = Path(os.getenv("PREDICTIONS_PATH", str(PREDICTIONS_DIR / "prediction_history.csv")))
 
 PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
