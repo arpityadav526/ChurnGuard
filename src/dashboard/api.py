@@ -10,6 +10,8 @@ import sqlite3
 import shap
 import numpy as np
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
