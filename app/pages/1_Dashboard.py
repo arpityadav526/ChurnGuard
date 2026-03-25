@@ -1,11 +1,31 @@
 import streamlit as st
 import pandas as pd
-from components.helpers import get_data, safe_dataframe
+import requests
+from components.helpers import get_data, safe_dataframe, BASE_URL
+
+st.write("BASE_URL in app:", BASE_URL)
+
+# direct backend checks
+try:
+    health_resp = requests.get(f"{BASE_URL}/health", timeout=30)
+    st.write("Health status code:", health_resp.status_code)
+    st.json(health_resp.json())
+except Exception as e:
+    st.error(f"Direct /health request failed: {e}")
+
+try:
+    metrics_resp = requests.get(f"{BASE_URL}/metrics", timeout=30)
+    st.write("Metrics status code:", metrics_resp.status_code)
+    try:
+        st.json(metrics_resp.json())
+    except Exception:
+        st.write(metrics_resp.text)
+except Exception as e:
+    st.error(f"Direct /metrics request failed: {e}")
 
 st.title("Dashboard")
 
 with st.spinner("Loading dashboard data..."):
-    # API calls
     metrics = get_data("/metrics")
     risk_distribution = get_data("/risk-distribution")
     contract_churn = get_data("/contract-churn")

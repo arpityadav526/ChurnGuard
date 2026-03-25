@@ -14,57 +14,67 @@ def get_base_url():
 BASE_URL = get_base_url()
 
 
+def build_url(endpoint: str) -> str:
+    if not endpoint.startswith("/"):
+        endpoint = f"/{endpoint}"
+    return f"{BASE_URL}{endpoint}"
+
+
 def get_data(endpoint: str):
     try:
-        response = requests.get(f"{BASE_URL}{endpoint}", timeout=20)
+        url = build_url(endpoint)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
         return response.json()
 
     except requests.exceptions.Timeout:
-        st.error("Request timed out. Backend is taking too long.")
+        st.error(f"Request timed out while calling {build_url(endpoint)}")
         return None
 
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to backend. Check whether the backend URL is correct and the FastAPI server is running.")
+    except requests.exceptions.ConnectionError as e:
+        st.error(f"Cannot connect to backend at {build_url(endpoint)}")
+        st.error(str(e))
         return None
 
     except requests.exceptions.HTTPError as e:
         try:
             error_detail = response.json()
-            st.error(f"API error: {error_detail}")
+            st.error(f"API error from {build_url(endpoint)}: {error_detail}")
         except Exception:
-            st.error(f"HTTP error: {e}")
+            st.error(f"HTTP error from {build_url(endpoint)}: {e}")
         return None
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Request failed: {e}")
+        st.error(f"Request failed for {build_url(endpoint)}: {e}")
         return None
 
 
 def post_json(endpoint: str, payload: dict):
     try:
-        response = requests.post(f"{BASE_URL}{endpoint}", json=payload, timeout=30)
+        url = build_url(endpoint)
+        response = requests.post(url, json=payload, timeout=60)
         response.raise_for_status()
         return response.json()
 
     except requests.exceptions.Timeout:
-        st.error("Prediction request timed out.")
+        st.error(f"Prediction request timed out while calling {build_url(endpoint)}")
         return None
 
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to backend. Check whether the backend URL is correct and the FastAPI server is running.")
+    except requests.exceptions.ConnectionError as e:
+        st.error(f"Cannot connect to backend at {build_url(endpoint)}")
+        st.error(str(e))
         return None
 
     except requests.exceptions.HTTPError as e:
         try:
             error_detail = response.json()
-            st.error(f"API error: {error_detail}")
+            st.error(f"API error from {build_url(endpoint)}: {error_detail}")
         except Exception:
-            st.error(f"HTTP error: {e}")
+            st.error(f"HTTP error from {build_url(endpoint)}: {e}")
         return None
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Request failed: {e}")
+        st.error(f"Request failed for {build_url(endpoint)}: {e}")
         return None
 
 
@@ -74,29 +84,31 @@ def post_file(endpoint: str, uploaded_file):
         return None
 
     try:
+        url = build_url(endpoint)
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
-        response = requests.post(f"{BASE_URL}{endpoint}", files=files, timeout=120)
+        response = requests.post(url, files=files, timeout=180)
         response.raise_for_status()
         return response.json()
 
     except requests.exceptions.Timeout:
-        st.error("Batch prediction request timed out.")
+        st.error(f"Batch prediction request timed out while calling {build_url(endpoint)}")
         return None
 
-    except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to backend. Check whether the backend URL is correct and the FastAPI server is running.")
+    except requests.exceptions.ConnectionError as e:
+        st.error(f"Cannot connect to backend at {build_url(endpoint)}")
+        st.error(str(e))
         return None
 
     except requests.exceptions.HTTPError as e:
         try:
             error_detail = response.json()
-            st.error(f"API error: {error_detail}")
+            st.error(f"API error from {build_url(endpoint)}: {error_detail}")
         except Exception:
-            st.error(f"HTTP error: {e}")
+            st.error(f"HTTP error from {build_url(endpoint)}: {e}")
         return None
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Request failed: {e}")
+        st.error(f"Request failed for {build_url(endpoint)}: {e}")
         return None
 
 
