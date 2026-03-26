@@ -11,11 +11,15 @@ import shap
 import numpy as np
 import os
 from dotenv import load_dotenv
+
+# IMPORTANT:
+# Change this import path if your feature_engineering.py is stored elsewhere.
+from src.models.feature_engineering import add_features
+
 load_dotenv()
 
 app = FastAPI(title="ChurnGuard API", version="1.0.0")
 
-# Streamlit-friendly CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -26,8 +30,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-
 )
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(BASE_DIR / "src" / "models" / "churn_model.pkl")))
@@ -64,7 +68,6 @@ if model_metrics is not None:
 else:
     print("Model metrics file not found.")
 
-# Build SHAP explainer once at startup
 try:
     explainer = shap.TreeExplainer(model)
     print("SHAP TreeExplainer initialized successfully.")
@@ -118,9 +121,10 @@ REQUIRED_COLUMNS = [
 ]
 
 ENGINEERED_COLUMNS = [
-    "AvgCharges",
-    "IsNewCustomer",
-    "HighSpender",
+    "AvgMonthlySpend",
+    "TenureGroup",
+    "TotalServices",
+    "ContractRisk",
 ]
 
 
@@ -284,12 +288,18 @@ def preprocess_input_df(input_df: pd.DataFrame) -> pd.DataFrame:
             processed_df["TotalCharges"].median()
         )
 
-    # Must match training exactly
-    processed_df["AvgCharges"] = processed_df["TotalCharges"] / (processed_df["tenure"] + 1)
-    processed_df["IsNewCustomer"] = (processed_df["tenure"] <= 12).astype(int)
-    processed_df["HighSpender"] = (processed_df["MonthlyCharges"] >= 80).astype(int)
+    # Apply SAME feature engineering as training
+    processed_df = add_features(processed_df)
 
-    encoded_df = pd.get_dummies(processed_df)
+    # If add_features accidentally receives Churn in some cases, remove it
+    if "Churn" in processed_df.columns:
+        processed_df = processed_df.drop(columns=["Churn"])
+
+    # Match training encoding logic
+    cat_cols = processed_df.select_dtypes(include=["object"]).columns
+    encoded_df = pd.get_dummies(processed_df, columns=cat_cols, drop_first=True)
+
+    # Align with training columns
     encoded_df = encoded_df.reindex(columns=model_columns, fill_value=0)
 
     return encoded_df
@@ -320,9 +330,10 @@ def prettify_feature_name(name: str) -> str:
         "PaymentMethod": "Payment Method",
         "MonthlyCharges": "Monthly Charges",
         "TotalCharges": "Total Charges",
-        "AvgCharges": "Average Charges",
-        "IsNewCustomer": "New Customer Flag",
-        "HighSpender": "High Spender Flag",
+        "AvgMonthlySpend": "Average Monthly Spend",
+        "TenureGroup": "Tenure Group",
+        "TotalServices": "Total Services",
+        "ContractRisk": "Contract Risk",
     }
     return pretty_map.get(name, name)
 
@@ -336,20 +347,62 @@ def get_feature_group(feature_name: str) -> str:
         if feature_name.startswith(f"{col}_"):
             return col
 
+    # handle one-hot tenure group names explicitly
+    if feature_name.startswith("TenureGroup_"):
+        return "TenureGroup"
+
     return feature_name
 
 
 def get_display_value(feature_group: str, original_row: dict) -> str:
     if feature_group in original_row:
         return str(original_row.get(feature_group))
-    if feature_group == "AvgCharges":
+
+    if feature_group == "AvgMonthlySpend":
         tenure = float(original_row.get("tenure", 0))
         total = float(original_row.get("TotalCharges", 0))
         return str(round(total / (tenure + 1), 2))
-    if feature_group == "IsNewCustomer":
-        return str(int(float(original_row.get("tenure", 0)) <= 12))
-    if feature_group == "HighSpender":
-        return str(int(float(original_row.get("MonthlyCharges", 0)) >= 80))
+
+    if feature_group == "TenureGroup":
+        tenure = float(original_row.get("tenure", 0))
+        if tenure <= 12:
+            return "New"
+        elif tenure <= 24:
+            return "Mid"
+        else:
+            return "Loyal"
+
+    if feature_group == "TotalServices":
+        service_mapping = {
+            "No": 0,
+            "Yes": 1,
+            "No internet service": 0,
+            "No phone service": 0,
+            "Fiber optic": 1,
+            "DSL": 1,
+        }
+
+        service_cols = [
+            "PhoneService", "MultipleLines", "InternetService",
+            "OnlineSecurity", "OnlineBackup", "DeviceProtection",
+            "TechSupport", "StreamingTV", "StreamingMovies"
+        ]
+
+        total = 0
+        for col in service_cols:
+            total += service_mapping.get(original_row.get(col), 0)
+
+        return str(total)
+
+    if feature_group == "ContractRisk":
+        contract = original_row.get("Contract")
+        contract_map = {
+            "Month-to-month": 2,
+            "One year": 1,
+            "Two year": 0
+        }
+        return str(contract_map.get(contract, "N/A"))
+
     return "N/A"
 
 
@@ -374,9 +427,10 @@ def build_driver_description(feature_group: str, value: str, shap_value: float) 
         "InternetService": f"Internet service type ({value}) {direction_text} churn risk for this customer.",
         "Partner": f"Partner status ({value}) {direction_text} churn risk in the current prediction.",
         "TotalCharges": f"Total charges ({value}) {direction_text} churn risk in the model output.",
-        "AvgCharges": f"Average charges ({value}) {direction_text} churn risk after feature engineering.",
-        "IsNewCustomer": f"New customer indicator ({value}) {direction_text} churn risk in the model.",
-        "HighSpender": f"High spender indicator ({value}) {direction_text} churn risk in the model.",
+        "AvgMonthlySpend": f"Average monthly spend ({value}) {direction_text} churn risk after feature engineering.",
+        "TenureGroup": f"Tenure group ({value}) {direction_text} churn risk for this customer segment.",
+        "TotalServices": f"Total subscribed services ({value}) {direction_text} churn risk in the model.",
+        "ContractRisk": f"Contract risk score ({value}) {direction_text} churn risk in the model.",
     }
 
     return custom_descriptions.get(
@@ -404,7 +458,6 @@ def explain_with_shap(input_df: pd.DataFrame) -> dict:
         shap_values_raw = shap_explanation.values
         expected_value = shap_explanation.base_values
 
-    # Normalize SHAP output across model types
     if isinstance(shap_values_raw, list):
         if len(shap_values_raw) > 1:
             shap_values = np.array(shap_values_raw[1])
@@ -493,8 +546,8 @@ def get_global_feature_importance() -> list[dict]:
         {"feature": "Contract", "score": 92},
         {"feature": "Monthly Charges", "score": 84},
         {"feature": "Tenure", "score": 79},
-        {"feature": "Tech Support", "score": 63},
-        {"feature": "Online Security", "score": 58},
+        {"feature": "Average Monthly Spend", "score": 67},
+        {"feature": "Total Services", "score": 58},
     ]
 
 
@@ -575,7 +628,6 @@ async def predict_batch(file: UploadFile = File(...)):
         retention_action(row) for row in original_df.to_dict(orient="records")
     ]
 
-    # Batch SHAP top drivers per row
     top_drivers_list = []
     explanation_bars_list = []
     for row in original_df.to_dict(orient="records"):

@@ -12,6 +12,10 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
+# IMPORTANT:
+# Change this import path if your feature_engineering.py is stored elsewhere.
+from feature_engineering import add_features
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_PATH = BASE_DIR / "data" / "raw" / "IBM Teleco Churn Dataset.csv"
 
@@ -20,19 +24,30 @@ df = pd.read_csv(DATA_PATH)
 # -------------------
 # BASIC PREPROCESSING
 # -------------------
-df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
-df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
-
 if "customerID" in df.columns:
     df = df.drop("customerID", axis=1)
 
+df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
+df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
 
-# Target
-y = df["Churn"].map({"Yes": 1, "No": 0})
+# -------------------
+# FEATURE ENGINEERING
+# -------------------
+df = add_features(df)
+
+# -------------------
+# TARGET
+# -------------------
+df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
+
+y = df["Churn"]
 X = df.drop("Churn", axis=1)
 
-# One-hot encoding
-X_encoded = pd.get_dummies(X)
+# -------------------
+# ENCODING
+# -------------------
+cat_cols = X.select_dtypes(include=["object"]).columns
+X_encoded = pd.get_dummies(X, columns=cat_cols, drop_first=True)
 
 # -------------------
 # TRAIN-TEST SPLIT
@@ -59,7 +74,6 @@ model = XGBClassifier(
     eval_metric="logloss"
 )
 
-
 model.fit(X_train, y_train)
 
 # -------------------
@@ -67,7 +81,6 @@ model.fit(X_train, y_train)
 # -------------------
 y_prob = model.predict_proba(X_test)[:, 1]
 
-# threshold can be tuned later
 threshold = 0.4
 y_pred = (y_prob >= threshold).astype(int)
 
@@ -102,6 +115,8 @@ metrics = {
 MODEL_PATH = BASE_DIR / "src" / "models" / "churn_model.pkl"
 COLUMNS_PATH = BASE_DIR / "src" / "models" / "model_columns.pkl"
 METRICS_PATH = BASE_DIR / "src" / "models" / "model_metrics.pkl"
+
+MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 joblib.dump(model, MODEL_PATH)
 joblib.dump(X_encoded.columns.tolist(), COLUMNS_PATH)
